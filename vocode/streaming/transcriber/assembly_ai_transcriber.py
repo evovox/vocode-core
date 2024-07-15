@@ -75,12 +75,12 @@ class AssemblyAITranscriber(BaseAsyncTranscriber[AssemblyAITranscriberConfig]):
         if (
             len(self.buffer) / (2 * self.transcriber_config.sampling_rate)
         ) >= self.transcriber_config.buffer_size_seconds:
-            self.input_queue.put_nowait(self.buffer)
+            self.consume_nonblocking(self.buffer)
             self.buffer = bytearray()
 
-    def terminate(self):
+    async def terminate(self):
         self._ended = True
-        super().terminate()
+        await super().terminate()
 
     def get_assembly_ai_url(self):
         url_params = {"sample_rate": self.transcriber_config.sampling_rate}
@@ -106,7 +106,7 @@ class AssemblyAITranscriber(BaseAsyncTranscriber[AssemblyAITranscriberConfig]):
             async def sender(ws):  # sends audio to websocket
                 while not self._ended:
                     try:
-                        data = await asyncio.wait_for(self.input_queue.get(), 5)
+                        data = await asyncio.wait_for(self._input_queue.get(), 5)
                     except asyncio.exceptions.TimeoutError:
                         break
                     num_channels = 1
@@ -133,7 +133,7 @@ class AssemblyAITranscriber(BaseAsyncTranscriber[AssemblyAITranscriberConfig]):
                     is_final = "message_type" in data and data["message_type"] == "FinalTranscript"
 
                     if "text" in data and data["text"]:
-                        self.output_queue.put_nowait(
+                        self.produce_nonblocking(
                             Transcription(
                                 message=data["text"],
                                 confidence=data["confidence"],

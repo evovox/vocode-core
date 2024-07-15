@@ -57,9 +57,9 @@ class GoogleTranscriber(BaseThreadAsyncTranscriber[GoogleTranscriberConfig]):
         responses = self.client.streaming_recognize(self.google_streaming_config, requests)
         self.process_responses_loop(responses)
 
-    def terminate(self):
+    async def terminate(self):
         self._ended = True
-        super().terminate()
+        await super().terminate()
 
     def process_responses_loop(self, responses):
         for response in responses:
@@ -80,7 +80,7 @@ class GoogleTranscriber(BaseThreadAsyncTranscriber[GoogleTranscriberConfig]):
         message = top_choice.transcript
         confidence = top_choice.confidence
 
-        self.output_janus_queue.sync_q.put_nowait(
+        self.produce_nonblocking(
             Transcription(message=message, confidence=confidence, is_final=result.is_final)
         )
 
