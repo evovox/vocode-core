@@ -21,7 +21,8 @@ from vocode.streaming.synthesizer.miniaudio_worker import MiniaudioWorker
 from vocode.streaming.telephony.constants import MULAW_SILENCE_BYTE, PCM_SILENCE_BYTE
 from vocode.streaming.utils import convert_wav, get_chunk_size_per_second
 from vocode.streaming.utils.async_requester import AsyncRequestor
-from vocode.streaming.utils.create_task import asyncio_create_task_with_done_error_log
+from vocode.streaming.utils.create_task import asyncio_create_task
+from vocode.streaming.utils.worker import QueueConsumer
 
 FILLER_PHRASES = [
     BaseMessage(text="Um..."),
@@ -50,6 +51,13 @@ def encode_as_wav(chunk: bytes, synthesizer_config: SynthesizerConfig) -> bytes:
 
 
 class SynthesisResult:
+    """Holds audio bytes for an utterance and method to know how much of utterance was spoken
+
+    @param chunk_generator - an async generator that that yields ChunkResult objects, which contain chunks of audio and a flag indicating if it is the last chunk
+    @param get_message_up_to - takes in the number of seconds spoken and returns the message up to that point
+    - *if seconds is None, then it should return the full messages*
+    """
+
     class ChunkResult:
         def __init__(self, chunk: bytes, is_last_chunk: bool):
             self.chunk = chunk
@@ -58,7 +66,7 @@ class SynthesisResult:
     def __init__(
         self,
         chunk_generator: AsyncGenerator[ChunkResult, None],
-        get_message_up_to: Callable[[float], str],
+        get_message_up_to: Callable[[Optional[float]], str],
         cached: bool = False,
         is_first: bool = False,
         synthesis_total_span: Optional[SentrySpan] = None,
@@ -111,7 +119,7 @@ class FillerAudio:
             )
         else:
             output_generator = chunk_generator()
-        return SynthesisResult(output_generator, lambda seconds: self.message.text)
+        return SynthesisResult(output_generator, lambda _: self.message.text)
 
 
 class CachedAudio:
@@ -150,12 +158,12 @@ class CachedAudio:
 
         if isinstance(self.message, BotBackchannel):
 
-            def get_message_up_to(seconds):
+            def get_message_up_to(seconds: Optional[float]):
                 return self.message.text
 
         else:
 
-            def get_message_up_to(seconds):
+            def get_message_up_to(seconds: Optional[float]):
                 return BaseSynthesizer.get_message_cutoff_from_total_response_length(
                     self.synthesizer_config, self.message, seconds, len(self.audio_data)
                 )
@@ -273,11 +281,14 @@ class BaseSynthesizer(Generic[SynthesizerConfigType]):
     def get_message_cutoff_from_total_response_length(
         synthesizer_config: SynthesizerConfig,
         message: BaseMessage,
-        seconds: float,
+        seconds: Optional[float],
         size_of_output: int,
     ) -> str:
         estimated_output_seconds = size_of_output / synthesizer_config.sampling_rate
         if not message.text:
+            return message.text
+
+        if seconds is None:
             return message.text
 
         estimated_output_seconds_per_char = estimated_output_seconds / len(message.text)
@@ -285,8 +296,12 @@ class BaseSynthesizer(Generic[SynthesizerConfigType]):
 
     @staticmethod
     def get_message_cutoff_from_voice_speed(
-        message: BaseMessage, seconds: float, words_per_minute: int
+        message: BaseMessage, seconds: Optional[float], words_per_minute: int = 150
     ) -> str:
+
+        if seconds is None:
+            return message.text
+
         words_per_second = words_per_minute / 60
         estimated_words_spoken = math.floor(words_per_second * seconds)
         tokens = word_tokenize(message.text)
@@ -396,14 +411,12 @@ class BaseSynthesizer(Generic[SynthesizerConfigType]):
         response: aiohttp.ClientResponse,
         chunk_size: int,
     ) -> AsyncGenerator[SynthesisResult.ChunkResult, None]:
-        miniaudio_worker_input_queue: asyncio.Queue[Union[bytes, None]] = asyncio.Queue()
-        miniaudio_worker_output_queue: asyncio.Queue[Tuple[bytes, bool]] = asyncio.Queue()
+        miniaudio_worker_consumer: QueueConsumer = QueueConsumer()
         miniaudio_worker = MiniaudioWorker(
             self.synthesizer_config,
             chunk_size,
-            miniaudio_worker_input_queue,
-            miniaudio_worker_output_queue,
         )
+        miniaudio_worker.consumer = miniaudio_worker_consumer
         miniaudio_worker.start()
         stream_reader = response.content
 
@@ -414,12 +427,12 @@ class BaseSynthesizer(Generic[SynthesizerConfigType]):
             miniaudio_worker.consume_nonblocking(None)  # sentinel
 
         try:
-            asyncio_create_task_with_done_error_log(send_chunks(), reraise_cancelled=True)
+            asyncio_create_task(send_chunks())
 
             # Await the output queue of the MiniaudioWorker and yield the wav chunks in another loop
             while True:
                 # Get the wav chunk and the flag from the output queue of the MiniaudioWorker
-                wav_chunk, is_last = await miniaudio_worker.output_queue.get()
+                wav_chunk, is_last = await miniaudio_worker_consumer.input_queue.get()
                 if self.synthesizer_config.should_encode_as_wav:
                     wav_chunk = encode_as_wav(wav_chunk, self.synthesizer_config)
 
@@ -433,7 +446,7 @@ class BaseSynthesizer(Generic[SynthesizerConfigType]):
         except asyncio.CancelledError:
             pass
         finally:
-            miniaudio_worker.terminate()
+            await miniaudio_worker.terminate()
 
     def _resample_chunk(
         self,
