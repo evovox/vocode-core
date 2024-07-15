@@ -200,8 +200,8 @@ def get_span_by_op(op_value) -> Span:
 def complete_span_by_op(op_value):
     try:
         span = get_span_by_op(op_value)
-    except TransactionNotSampled as e:
-        logger.debug(f"Transaction not sampled")
+    except TransactionNotSampled:
+        logger.debug("Transaction not sampled")
         return None
     except NoMatchingSpan:
         # TODO: Fix sentry running out of span depth

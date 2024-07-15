@@ -21,7 +21,11 @@ from vocode.streaming.models.transcriber import (
     Transcription,
 )
 from vocode.streaming.transcriber.base_transcriber import BaseAsyncTranscriber
-from vocode.utils.sentry_utils import CustomSentrySpans, sentry_configured, sentry_create_span
+from vocode.utils.sentry_utils import (
+    CustomSentrySpans,
+    sentry_configured,
+    sentry_create_span,
+)
 
 PUNCTUATION_TERMINATORS = [".", "!", "?"]
 NUM_RESTARTS = 5
@@ -620,6 +624,8 @@ class DeepgramTranscriber(BaseAsyncTranscriber[DeepgramTranscriberConfig]):
         # Once we have reliable way to find is_final_spoken_ts we would use that
         # here instead, and uncomment the transcription_latency span
         # start_timestamp=is_final_spoken_ts,
+
+        # Marker here
         latency_of_conversation_span = sentry_create_span(
             sentry_callable=sentry_sdk.start_span,
             op=CustomSentrySpans.LATENCY_OF_CONVERSATION,

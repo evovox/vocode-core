@@ -362,6 +362,7 @@ class StreamingConversation(Generic[OutputDeviceType]):
                     filler_audio.seconds_per_chunk,
                     started_event=self.filler_audio_started_event,
                 )
+                # Marker here
                 item.agent_response_tracker.set()
             except asyncio.CancelledError:
                 pass
@@ -569,11 +570,13 @@ class StreamingConversation(Generic[OutputDeviceType]):
                     TEXT_TO_SPEECH_CHUNK_SIZE_SECONDS,
                     transcript_message=transcript_message,
                 )
+                logger.debug("Sent speech to output...")
                 # publish the transcript message now that it includes what was said during send_speech_to_output
                 self.conversation.transcript.maybe_publish_transcript_event_from_message(
                     message=transcript_message,
                     conversation_id=self.conversation.id,
                 )
+                logger.debug("Published transcript event...")
                 item.agent_response_tracker.set()
                 logger.debug("Message sent: {}".format(message_sent))
                 if cut_off:
